@@ -1,6 +1,7 @@
 # WebGPU Monte Carlo π - Extreme Optimization Mode
 
 モンテカルロ法による円周率計算を、WebGPUの最新機能を用いて極限まで最適化したWebアプリケーションです。
+スライダーを動かすと本気を出します。
 
 ## 🚀 Features
 
