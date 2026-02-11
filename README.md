@@ -49,9 +49,29 @@
 
 ## 🌐 Deployment (GitHub Pages)
 
-このプロジェクトは GitHub Actions を利用して GitHub Pages に自動デプロイできます。
+このプロジェクトは GitHub Actions を利用して、GitHub Pages 上で自動公開できます。以下の手順で公開してください。
 
-1. GitHub で新しいリポジトリを作成し、コードをプッシュします。
-2. リポジトリの `Settings > Pages` に移動します。
-3. `Build and deployment > Source` を **"GitHub Actions"** に変更します。
-4. `main` ブランチにプッシュするたびに、自動的にビルドとデプロイが行われます。
+### 1. GitHub リポジトリの準備
+1. [GitHub](https://github.com/) で新しいリポジトリ（名称: `32_sci`）を **Public** で作成します。
+2. ローカルのターミナルで以下のコマンドを実行し、コードをプッシュします：
+   ```powershell
+   git init
+   git add .
+   git commit -m "Initial commit"
+   git branch -M main
+   git remote add origin https://github.com/[あなたのユーザー名]/32_sci.git
+   git push -u origin main
+   ```
+
+### 2. GitHub Pages の設定
+1. GitHub リポジトリのページを開き、**Settings** タブをクリックします。
+2. 左メニューの **Pages** を選択します。
+3. **Build and deployment > Source** のプルダウンメニューを `Deploy from a branch` から **`GitHub Actions`** に変更します。
+   - ※これにより、リポジトリ内の `.github/workflows/deploy.yml` が自動的に使用されるようになります。
+
+### 3. デプロイの確認
+1. ヘッダーの **Actions** タブをクリックすると、デプロイ（`Deploy to GitHub Pages`）の進捗が確認できます。
+2. 全てのステップが完了（緑のチェック）したら、GitHub Pages セクションに表示されたURL（通常は `https://[ユーザー名].github.io/32_sci/`）にアクセスしてください。
+
+> [!IMPORTANT]
+> **WebGPU の注意点**: GitHub Pages (HTTPS経由) で公開する場合、WebGPU はセキュアなコンテキストでのみ動作するため、問題なく実行可能です。

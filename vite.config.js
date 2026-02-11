@@ -15,6 +15,6 @@ export default defineConfig({
     plugins: [
         topLevelAwait()
     ],
-    // WGSLファイルを文字列として扱う設定
+    // WGSLファイルをソースとして扱う設定
     assetsInclude: ['**/*.wgsl']
 });

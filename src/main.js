@@ -1,6 +1,10 @@
 import { GPUManager } from './core/gpu_manager.js';
 import { MiniChart } from './ui/chart.js';
 
+// Import shaders as raw strings for Vite environment
+import simShaderSource from './shaders/simulation.wgsl?raw';
+import renderShaderSource from './shaders/render.wgsl?raw';
+
 const PI_TRUE = 3.14159265358979323846;
 
 class App {
@@ -52,7 +56,10 @@ class App {
 
     async init() {
         try {
-            await this.gpu.init(this.canvas);
+            await this.gpu.init(this.canvas, {
+                simulation: simShaderSource,
+                render: renderShaderSource
+            });
             this.stats.gpuStatus.classList.add('active'); // Turn Green
             this.isRunning = true;
             this.setupListeners();

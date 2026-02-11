@@ -18,7 +18,7 @@ export class GPUManager {
         this.maxVisualPoints = 1000000; // 1M points for visualization
     }
 
-    async init(canvas) {
+    async init(canvas, shaderSources) {
         if (!navigator.gpu) {
             throw new Error("WebGPU not supported on this browser.");
         }
@@ -60,7 +60,7 @@ export class GPUManager {
         });
 
         await this.createResources();
-        await this.createPipelines(canvasFormat, useSubgroups);
+        await this.createPipelines(canvasFormat, useSubgroups, shaderSources);
         console.log("WebGPU Initialized. Recommended Adapter:", adapter.info);
     }
 
@@ -107,9 +107,9 @@ export class GPUManager {
         });
     }
 
-    async createPipelines(format, useSubgroups) {
+    async createPipelines(format, useSubgroups, shaderSources) {
         // --- Compute Pipeline ---
-        let simCode = await (await fetch('shaders/simulation.wgsl')).text();
+        let simCode = shaderSources.simulation;
 
         // Preprocessing Shader Code
         if (useSubgroups) {
@@ -169,7 +169,7 @@ export class GPUManager {
         // --- Render Pipeline ---
         const renderModule = this.device.createShaderModule({
             label: "Render Shader",
-            code: await (await fetch('shaders/render.wgsl')).text()
+            code: shaderSources.render
         });
 
         // For rendering, we need readonly access to f16 buffers from Vertex stage
