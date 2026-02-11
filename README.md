@@ -46,3 +46,12 @@
 ## 🔬 Verification
 
 「Verify」ボタンを押すと、CPU (JavaScript) で全く同じアルゴリズムを検証し、GPUの動作が数学的に正しいことを確認できます。
+
+## 🌐 Deployment (GitHub Pages)
+
+このプロジェクトは GitHub Actions を利用して GitHub Pages に自動デプロイできます。
+
+1. GitHub で新しいリポジトリを作成し、コードをプッシュします。
+2. リポジトリの `Settings > Pages` に移動します。
+3. `Build and deployment > Source` を **"GitHub Actions"** に変更します。
+4. `main` ブランチにプッシュするたびに、自動的にビルドとデプロイが行われます。
