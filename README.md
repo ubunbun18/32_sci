@@ -1,10 +1,10 @@
 # WebGPU Monte Carlo π - Blackwell 16.8 TFLOPS Edition
 
-モンテカルロ法による円周率計算を、WebGPUの最新機能を用いて極限まで最適化したハイパフォーマンス・コンピューティング（HPC）ショーケースです。
+モンテカルロ法による円周率計算を、WebGPUの最新機能を用いて最適化したハイパフォーマンス・コンピューティング（HPC）ショーケースです。
 スライダーを動かすと本気を出します。
 
 > [!IMPORTANT]
-> **World-Class Performance**: NVIDIA Blackwell GPU において **16.8 TFLOPS (16,861 GFLOPS)** という驚異的な演算性能を達成。11兆回以上の試行をわずか10秒で完遂し、統計的正当性を科学的に証明しました。
+> **World-Class Performance**: NVIDIA Blackwell GPU において **16.8 TFLOPS (16,861 GFLOPS)** という演算性能を達成。11兆回以上の試行をわずか10秒で完遂し、統計的正当性を科学的に証明しました。
 
 ## 🚀 Features
 
@@ -51,32 +51,6 @@
 ## 🔬 Verification
 
 「Verify」ボタンを押すと、CPU (JavaScript) で全く同じアルゴリズムを検証し、GPUの動作が数学的に正しいことを確認できます。
-
-## 🌐 Deployment (GitHub Pages)
-
-このプロジェクトは GitHub Actions を利用して、GitHub Pages 上で自動公開できます。以下の手順で公開してください。
-
-### 1. GitHub リポジトリの準備
-1. [GitHub](https://github.com/) で新しいリポジトリ（名称: `32_sci`）を **Public** で作成します。
-2. ローカルのターミナルで以下のコマンドを実行し、コードをプッシュします：
-   ```powershell
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git branch -M main
-   git remote add origin https://github.com/[あなたのユーザー名]/32_sci.git
-   git push -u origin main
-   ```
-
-### 2. GitHub Pages の設定
-1. GitHub リポジトリのページを開き、**Settings** タブをクリックします。
-2. 左メニューの **Pages** を選択します。
-3. **Build and deployment > Source** のプルダウンメニューを `Deploy from a branch` から **`GitHub Actions`** に変更します。
-   - ※これにより、リポジトリ内の `.github/workflows/deploy.yml` が自動的に使用されるようになります。
-
-### 3. デプロイの確認
-1. ヘッダーの **Actions** タブをクリックすると、デプロイ（`Deploy to GitHub Pages`）の進捗が確認できます。
-2. 全てのステップが完了（緑のチェック）したら、GitHub Pages セクションに表示されたURL（通常は `https://[ユーザー名].github.io/32_sci/`）にアクセスしてください。
 
 > [!IMPORTANT]
 > **WebGPU の注意点**: GitHub Pages (HTTPS経由) で公開する場合、WebGPU はセキュアなコンテキストでのみ動作するため、問題なく実行可能です。
