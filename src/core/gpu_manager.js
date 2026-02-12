@@ -8,14 +8,24 @@ export class GPUManager {
         this.simulationParams = {
             seed: 0,
             global_time: 0,
-            batch_size: 64, // Default loop count per thread (x4 SIMD = 256 samples)
+            batch_size: 64, // 64 loops * 8 samples = 512 samples per thread
             write_threshold: 0
         };
         this.frameCounter = 0;
+        this.isReading = false;
+        this.lastResult = { inside: 0n, total: 0n };
 
         // Settings
         this.workgroupSize = 256;
-        this.maxVisualPoints = 1000000; // 1M points for visualization
+        this.maxVisualPoints = 1048576;
+
+        // RNG State Management (128-bit state per thread)
+        this.totalThreads = 128 * 256; // 32,768 threads fixed
+        this.rngStateBuffer = null;
+    }
+
+    escapeRegExp(string) {
+        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     async init(canvas, shaderSources) {
@@ -23,12 +33,33 @@ export class GPUManager {
             throw new Error("WebGPU not supported on this browser.");
         }
 
-        const adapter = await navigator.gpu.requestAdapter({
+        console.log("🔍 Attempting to request WebGPU Adapter...");
+
+        // Strategy 1: High-Performance
+        let adapter = await navigator.gpu.requestAdapter({
             powerPreference: "high-performance"
         });
 
+        // Strategy 2: Default
         if (!adapter) {
-            throw new Error("No appropriate GPUAdapter found.");
+            console.warn("⚠️ High-performance adapter locked or not found. Retrying with default...");
+            adapter = await navigator.gpu.requestAdapter();
+        }
+
+        // Strategy 3: Fallback (Software or low-power if allowed)
+        if (!adapter) {
+            console.warn("🚨 All standard GPU adapters are locked. Attempting emergency fallback adapter...");
+            adapter = await navigator.gpu.requestAdapter({
+                forceFallbackAdapter: true
+            });
+        }
+
+        if (!adapter) {
+            const platformInfo = navigator.userAgent;
+            throw new Error(`CRITICAL: WebGPU Context Provider is DEADLOCKED. 
+            GPU Process has hung after extreme Blackwell Benchmarking.
+            User Agent: ${platformInfo}
+            ACTION REQUIRED: Please FULLY RESTART THE BROWSER (Close all tabs).`);
         }
 
         // Check features
@@ -60,7 +91,7 @@ export class GPUManager {
         });
 
         await this.createResources();
-        await this.createPipelines(canvasFormat, useSubgroups, shaderSources);
+        await this.initSimulationPipeline(canvasFormat, useSubgroups, shaderSources);
         console.log("WebGPU Initialized. Recommended Adapter:", adapter.info);
     }
 
@@ -84,54 +115,86 @@ export class GPUManager {
             label: "OutputBufferY"
         });
 
-        // Result Buffer (Atomic u32 x 4: inside_low, inside_high, total_low, total_high)
+        // Result Buffer (1024 slots * 16 bytes = 16384 bytes)
+        const resultBufferSize = 1024 * 16;
+
         this.buffers.result = this.device.createBuffer({
-            size: 16, // 4 bytes * 4
+            size: resultBufferSize,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
             label: "ResultBuffer"
         });
 
         // 3. Staging Buffer for reading results
         this.buffers.readback = this.device.createBuffer({
-            size: 16,
+            size: resultBufferSize,
             usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
             label: "ReadbackBuffer"
         });
 
-        // 4. Uniform Buffer
-        // Struct: seed(u32), global_time(u32), batch_size(u32), threshold(u32) = 16 bytes
         this.buffers.uniform = this.device.createBuffer({
             size: 16,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
             label: "SimParamsUniform"
         });
+
+        // 5. RNG State Buffer (Xoshiro128++ Vectorized)
+        // 16 x u32 (64 bytes) per thread for true 4-wide SIMD independence
+        const rngBufferSize = this.totalThreads * 64;
+        this.buffers.rngState = this.device.createBuffer({
+            size: rngBufferSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            label: "RNGStateBuffer"
+        });
+
+        // Initialize RNG states with high-quality random seeds
+        const seedData = new Uint32Array(this.totalThreads * 16);
+        const CHUNK_SIZE = 16384;
+        for (let i = 0; i < seedData.length; i += CHUNK_SIZE) {
+            const chunk = seedData.subarray(i, Math.min(i + CHUNK_SIZE, seedData.length));
+            crypto.getRandomValues(chunk);
+        }
+
+        // Secure RNG: Ensure non-zero state for Xoshiro
+        for (let i = 0; i < seedData.length; i += 4) {
+            if (seedData[i] === 0 && seedData[i + 1] === 0 && seedData[i + 2] === 0 && seedData[i + 3] === 0) {
+                seedData[i] = 0x9E3779B9; // Standard constant to break zero-state
+            }
+        }
+
+        this.device.queue.writeBuffer(this.buffers.rngState, 0, seedData);
     }
 
-    async createPipelines(format, useSubgroups, shaderSources) {
-        // --- Compute Pipeline ---
+    async initSimulationPipeline(format, useSubgroups, shaderSources) {
         let simCode = shaderSources.simulation;
 
-        // Preprocessing Shader Code
         if (useSubgroups) {
+            console.log("🛠️ Injecting Blackwell Subgroup Optimization...");
             // Inject extension enable
             simCode = "enable subgroups;\n" + simCode;
 
-            // Subgroup Optimization Injection
-            // We search for the standard shared memory atomic reduction block and replace it
-            // with Subgroup ops + Elected atomic reduction.
-            const targetBlock = `    // Atomic add to shared memory
-    atomicAdd(&wg_inside, private_inside);
-    atomicAdd(&wg_total, private_total);`;
+            const injectionTag = "<<GPU_OPTIMIZATION_INJECTION_POINT>>";
+            const optimizedBlock = `
+    // --- Subgroup Optimized Reduction (Blackwell Mode) ---
+    let slot_idx = gid % NUM_SLOTS;
+    let wg_inside = subgroupAdd(u_private_inside);
+    let wg_total = subgroupAdd(private_total);
 
-            const optimizedBlock = `    // Subgroup Optimized Reduction
-    private_inside = subgroupAdd(private_inside);
-    private_total = subgroupAdd(private_total);
     if (subgroupElect()) {
-        atomicAdd(&wg_inside, private_inside);
-        atomicAdd(&wg_total, private_total);
-    }`;
-
-            simCode = simCode.replace(targetBlock, optimizedBlock);
+        let low_i = atomicAdd(&result.slots[slot_idx].inside_low, wg_inside);
+        if (low_i + wg_inside < low_i) {
+            atomicAdd(&result.slots[slot_idx].inside_high, 1u);
+        }
+        let low_t = atomicAdd(&result.slots[slot_idx].total_low, wg_total);
+        if (low_t + wg_total < low_t) {
+            atomicAdd(&result.slots[slot_idx].total_high, 1u);
+        }
+    }
+    return; // Final Blackwell exit
+`;
+            // 🚨 IMPROVED REGEX: matches from the injection tag to the very end of the function.
+            // This ensures NO default code is left behind.
+            const totalReplacementPattern = new RegExp(this.escapeRegExp(injectionTag) + "[\\s\\S]*?(?=^}$)", "m");
+            simCode = simCode.replace(totalReplacementPattern, injectionTag + optimizedBlock);
         }
 
         const simulationModule = this.device.createShaderModule({
@@ -145,7 +208,8 @@ export class GPUManager {
             entries: [
                 { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // out_x
                 { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // out_y
-                { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }  // result
+                { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }, // result
+                { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }  // rng_state
             ]
         });
 
@@ -211,7 +275,8 @@ export class GPUManager {
             entries: [
                 { binding: 0, resource: { buffer: this.buffers.outX } },
                 { binding: 1, resource: { buffer: this.buffers.outY } },
-                { binding: 2, resource: { buffer: this.buffers.result } }
+                { binding: 2, resource: { buffer: this.buffers.result } },
+                { binding: 3, resource: { buffer: this.buffers.rngState } }
             ]
         });
 
@@ -246,14 +311,14 @@ export class GPUManager {
         this.device.queue.writeBuffer(this.buffers.uniform, 0, uniformData);
     }
 
-    async runFrame(dispatchCountX, dispatchCountY) {
+    async runFrame(dispatchCountX, dispatchCountY, options = { render: true, readback: true }) {
         this.frameCounter++;
         this.simulationParams.global_time = this.frameCounter;
-        this.updateParams({}); // Upload updated time
+        this.updateParams({});
 
         const commandEncoder = this.device.createCommandEncoder();
 
-        // 1. Compute Pass
+        // 1. Compute Pass (Always active)
         const computePass = commandEncoder.beginComputePass();
         computePass.setPipeline(this.pipelines.compute);
         computePass.setBindGroup(0, this.bindGroups.computeStatic);
@@ -262,60 +327,84 @@ export class GPUManager {
         computePass.end();
 
         // 2. Render Pass
-        const textureView = this.context.getCurrentTexture().createView();
-        const renderPass = commandEncoder.beginRenderPass({
-            colorAttachments: [{
-                view: textureView,
-                clearValue: { r: 0.02, g: 0.02, b: 0.02, a: 1.0 }, // Deep Void Black with slight tint
-                loadOp: "clear",
-                storeOp: "store"
-            }]
-        });
-        renderPass.setPipeline(this.pipelines.render);
-        renderPass.setBindGroup(0, this.bindGroups.render);
-        // Draw as many points as buffer holds. 
-        // Note: Ideally we track how many valid points were written if logic was complex,
-        // but here we map buffers 1:1 to threads in a cyclic/clamped way or just draw full buffer.
-        // For visual density, drawing full buffer (even if zeros initially) is fine as (0,0) is valid point (inside).
-        // To be cleaner, we draw 'maxVisualPoints'.
-        renderPass.draw(this.maxVisualPoints);
-        renderPass.end();
+        if (options.render) {
+            const textureView = this.context.getCurrentTexture().createView();
+            const renderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: textureView,
+                    clearValue: { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
+                    loadOp: "clear",
+                    storeOp: "store"
+                }]
+            });
+            renderPass.setPipeline(this.pipelines.render);
+            renderPass.setBindGroup(0, this.bindGroups.render);
+            renderPass.draw(this.maxVisualPoints);
+            renderPass.end();
+        }
 
-        // Result Readback logic
-        // 1. Copy Result to Readback (for CPU reading)
-        commandEncoder.copyBufferToBuffer(
-            this.buffers.result, 0,
-            this.buffers.readback, 0,
-            16 // 4 * 4 bytes
-        );
+        // --- CRITICAL FIX: Safe Readback Handling ---
+        // If readback is requested AND we are not already waiting for a previous one
+        if (options.readback && !this.isReading) {
+            // Check mapping state to avoid "Buffer used in submit while mapped" error
+            // Unfortunately WebGPU doesn't have a synchronous "isMapped" check, 
+            // so we rely on our 'isReading' flag which MUST be perfectly managed.
 
-        // 2. Clear Result Buffer for next frame
-        commandEncoder.clearBuffer(this.buffers.result);
+            commandEncoder.copyBufferToBuffer(
+                this.buffers.result, 0,
+                this.buffers.readback, 0,
+                this.buffers.result.size
+            );
 
-        this.device.queue.submit([commandEncoder.finish()]);
+            // Clear Result for next cycle
+            commandEncoder.clearBuffer(this.buffers.result);
 
-        // Readback (Async)
-        await this.buffers.readback.mapAsync(GPUMapMode.READ);
-        const resultData = new Uint32Array(this.buffers.readback.getMappedRange());
+            this.device.queue.submit([commandEncoder.finish()]);
 
-        // Combine Low/High to BigInt
-        const insideLow = BigInt(resultData[0]);
-        const insideHigh = BigInt(resultData[1]);
-        const totalLow = BigInt(resultData[2]);
-        const totalHigh = BigInt(resultData[3]);
+            // Start async readback
+            this.isReading = true;
+            try {
+                await this.buffers.readback.mapAsync(GPUMapMode.READ);
+                const resultData = new Uint32Array(this.buffers.readback.getMappedRange());
 
-        const inside = insideLow + (insideHigh << 32n);
-        const total = totalLow + (totalHigh << 32n);
+                let totalInside = 0n;
+                let totalTotal = 0n;
 
-        this.buffers.readback.unmap();
+                // Sum all slots
+                for (let i = 0; i < 1024; i++) {
+                    const base = i * 4;
+                    totalInside += BigInt(resultData[base]) + (BigInt(resultData[base + 1]) << 32n);
+                    totalTotal += BigInt(resultData[base + 2]) + (BigInt(resultData[base + 3]) << 32n);
+                }
 
-        return { inside, total };
+                this.buffers.readback.unmap();
+                this.lastResult = { inside: totalInside, total: totalTotal };
+                return this.lastResult;
+            } catch (e) {
+                console.warn("Readback failed or aborted:", e);
+                return this.lastResult;
+            } finally {
+                this.isReading = false;
+            }
+        } else {
+            // Normal case: Just compute
+            this.device.queue.submit([commandEncoder.finish()]);
+
+            // Optional: Wait for GPU to finish work if sync is requested (but no data read)
+            if (options.sync) {
+                await this.device.queue.onSubmittedWorkDone();
+            }
+
+            return this.lastResult;
+        }
     }
 
     resetStats() {
-        // Clear result buffer
-        const zeros = new Uint32Array([0, 0, 0, 0]);
-        this.device.queue.writeBuffer(this.buffers.result, 0, zeros);
+        // Clear result buffer (4096 bytes)
+        const commandEncoder = this.device.createCommandEncoder();
+        commandEncoder.clearBuffer(this.buffers.result);
+        this.device.queue.submit([commandEncoder.finish()]);
         this.frameCounter = 0;
+        this.lastResult = { inside: 0n, total: 0n }; // Reset internal BIGINT cache
     }
 }

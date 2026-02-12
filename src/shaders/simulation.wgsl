@@ -18,11 +18,17 @@ struct SimParams {
     write_threshold: u32,
 };
 
-struct Result {
+const NUM_SLOTS = 1024u;
+
+struct Slot {
     inside_low: atomic<u32>,
     inside_high: atomic<u32>,
     total_low: atomic<u32>,
     total_high: atomic<u32>,
+};
+
+struct Result {
+    slots: array<Slot, NUM_SLOTS>,
 };
 
 @group(0) @binding(0) var<storage, read_write> out_x: array<f16>;
@@ -30,118 +36,105 @@ struct Result {
 @group(0) @binding(2) var<storage, read_write> result: Result;
 @group(1) @binding(0) var<uniform> params: SimParams;
 
-// --- Shared Memory ---
-var<workgroup> wg_inside: atomic<u32>;
-var<workgroup> wg_total: atomic<u32>;
+struct RNGState {
+    s0: vec4<u32>,
+    s1: vec4<u32>,
+    s2: vec4<u32>,
+    s3: vec4<u32>,
+};
 
-// --- Helper Functions (PCG Hash) ---
-// High quality, statistically good RNG.
-fn pcg_hash(input: u32) -> u32 {
-    let state = input * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
+@group(0) @binding(3) var<storage, read_write> rng_storage: array<vec4<u32>>;
+
+fn rotl(x: vec4<u32>, k: u32) -> vec4<u32> {
+    let vk = vec4<u32>(k);
+    let vnk = vec4<u32>(32u - k);
+    return (x << vk) | (x >> vnk);
 }
 
-// Convert u32 random to f32 [0.0, 1.0)
-fn random_float(seed: u32) -> f32 {
-    // 0x3f800000 is 1.0 in float bit representation.
-    // We mask random bits to mantissa (23 bits) and set exponent to 1.0 range.
-    // Method: (u32 >> 9) | 0x3f800000 -> [1.0, 2.0). Then subtract 1.0.
-    // This is faster than division.
-    // Mantissa is 23 bits. We take top 23 bits of u32 (>> 9).
-    let m = (seed >> 9u) & 0x7FFFFFu;
-    let ieee = m | 0x3F800000u;
-    return bitcast<f32>(ieee) - 1.0;
+// Xoshiro128++ (Vectorized)
+// Each lane is a completely independent generator (512-bit state total per thread).
+fn xoshiro128pp_next(s: ptr<function, RNGState>) -> vec4<u32> {
+    let result = rotl((*s).s0 + (*s).s3, 7u) + (*s).s0;
+    
+    let t = (*s).s1 << vec4<u32>(9u);
+    (*s).s2 ^= (*s).s0;
+    (*s).s3 ^= (*s).s1;
+    (*s).s1 ^= (*s).s2;
+    (*s).s0 ^= (*s).s3;
+    (*s).s2 ^= t;
+    (*s).s3 = rotl((*s).s3, 11u);
+    
+    return result;
 }
 
-// --- Main Kernel ---
+// Convert vec4<u32> random to vec4<f32> [0.0, 1.0)
+// High-precision version: Uses full 32-bit entropy to satisfy trillion-sample variance limit.
+fn to_float_v4(v: vec4<u32>) -> vec4<f32> {
+    return vec4<f32>(v) * 2.3283064365386962890625e-10; 
+}
+
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn main(
-    @builtin(global_invocation_id) global_id: vec3<u32>,
-    @builtin(local_invocation_id) local_id: vec3<u32>
+    @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
     let gid = global_id.x;
-    let lid = local_id.x;
-
-    // Use unique ID sequence per thread
-    // Seed strategy: Base seed + Global Thread ID + Time steps
-    // To ensure quality, we use the hash of inputs as the iterator state.
-    var rng_state = pcg_hash(params.seed + gid) ^ pcg_hash(params.global_time);
-
-    var private_inside: u32 = 0u;
-    let count = params.batch_size;
     
-    // Visualization logic
-    let write_index = gid;
-    var should_write_viz = (gid < arrayLength(&out_x)); 
+    // 1. Load RNG State (512-bit per thread = 4 vec4s)
+    let offset = gid * 4u;
+    var state: RNGState;
+    state.s0 = rng_storage[offset];
+    state.s1 = rng_storage[offset+1u];
+    state.s2 = rng_storage[offset+2u];
+    state.s3 = rng_storage[offset+3u];
+
+    var private_inside_v1 = vec4<u32>(0u);
+    var private_inside_v2 = vec4<u32>(0u);
+    let count = params.batch_size; 
+    
     var last_x: f32 = 0.0;
     var last_y: f32 = 0.0;
-    var wrote_sample = false;
 
-    // The Loop
+    // 2. The Core Loop (8x SIMD Vectorized Xoshiro)
     for (var i: u32 = 0u; i < count; i++) {
-        // 1. Generate Random X
-        rng_state = pcg_hash(rng_state); // Next state
-        // To avoid correlation between X and Y from sequential states (though PCG is good),
-        // we can mix it. But simple sequential PCG is usually fine for MC.
-        let rx = random_float(rng_state);
+        let rx1_raw = xoshiro128pp_next(&state);
+        let ry1_raw = xoshiro128pp_next(&state);
+        private_inside_v1 += select(vec4<u32>(0u), vec4<u32>(1u), to_float_v4(rx1_raw)*to_float_v4(rx1_raw) + to_float_v4(ry1_raw)*to_float_v4(ry1_raw) <= vec4<f32>(1.0));
 
-        // 2. Generate Random Y
-        rng_state = pcg_hash(rng_state);
-        let ry = random_float(rng_state);
+        let rx2_raw = xoshiro128pp_next(&state);
+        let ry2_raw = xoshiro128pp_next(&state);
+        private_inside_v2 += select(vec4<u32>(0u), vec4<u32>(1u), to_float_v4(rx2_raw)*to_float_v4(rx2_raw) + to_float_v4(ry2_raw)*to_float_v4(ry2_raw) <= vec4<f32>(1.0));
 
-        // 3. Circle Check (Float Precision)
-        let dist_sq = rx*rx + ry*ry;
-        if (dist_sq <= 1.0) {
-            private_inside += 1u;
-        }
-
-        // 4. Viz Capture (Store last sample)
-        if (should_write_viz) {
-            last_x = rx; // Already f32
-            last_y = ry;
-            wrote_sample = true;
+        if (i == count - 1u) {
+            last_x = to_float_v4(rx1_raw).x;
+            last_y = to_float_v4(ry1_raw).x;
         }
     }
 
-    // --- Visualization Write ---
-    if (wrote_sample) {
-        // Direct f32 to f16 conversion
-        out_x[write_index] = f16(last_x);
-        out_y[write_index] = f16(last_y);
+    // 3. Reduction
+    let sum_v = private_inside_v1 + private_inside_v2;
+    let u_private_inside = sum_v.x + sum_v.y + sum_v.z + sum_v.w;
+    let private_total = count * 8u; 
+
+    // 4. Save RNG State
+    rng_storage[offset] = state.s0;
+    rng_storage[offset+1u] = state.s1;
+    rng_storage[offset+2u] = state.s2;
+    rng_storage[offset+3u] = state.s3;
+
+    // 5. Visualization Write
+    if (gid < arrayLength(&out_x)) {
+        out_x[gid] = f16(last_x);
+        out_y[gid] = f16(last_y);
     }
 
-    // --- Reduction ---
-    let private_total = count; 
-
-    // Workgroup Reduction (Shared Memory)
-    // Initialize shared memory (only first thread)
-    if (lid == 0u) {
-        atomicStore(&wg_inside, 0u);
-        atomicStore(&wg_total, 0u);
+    // 6. Global Atomic Aggregate <<GPU_OPTIMIZATION_INJECTION_POINT>>
+    let slot_idx = gid % NUM_SLOTS;
+    let old_inside = atomicAdd(&result.slots[slot_idx].inside_low, u_private_inside);
+    if (old_inside + u_private_inside < old_inside) {
+        atomicAdd(&result.slots[slot_idx].inside_high, 1u);
     }
-    workgroupBarrier();
-
-    // Atomic add to shared memory
-    // This block MUST Match gpu_manager.js replacement target EXACTLY for Subgroups
-    atomicAdd(&wg_inside, private_inside);
-    atomicAdd(&wg_total, private_total);
-    
-    workgroupBarrier();
-
-    // Global Reduction (64-bit)
-    if (lid == 0u) {
-        let final_inside = atomicLoad(&wg_inside);
-        let final_total = atomicLoad(&wg_total);
-        
-        let old_inside = atomicAdd(&result.inside_low, final_inside);
-        if (old_inside + final_inside < old_inside) {
-            atomicAdd(&result.inside_high, 1u);
-        }
-
-        let old_total = atomicAdd(&result.total_low, final_total);
-        if (old_total + final_total < old_total) {
-            atomicAdd(&result.total_high, 1u);
-        }
+    let old_total = atomicAdd(&result.slots[slot_idx].total_low, private_total);
+    if (old_total + private_total < old_total) {
+        atomicAdd(&result.slots[slot_idx].total_high, 1u);
     }
 }

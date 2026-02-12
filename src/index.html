@@ -11,6 +11,7 @@
     <link
         href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600&display=swap"
         rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
 <body>
@@ -104,6 +105,54 @@
                 <h2>WebGPU Not Supported</h2>
                 <p>Your browser does not support WebGPU or the required features (shader-f16).</p>
                 <p>Please use Chrome Canary or enabled browser.</p>
+            </div>
+        </div>
+        <!-- Scientific Deep Dive Report Modal -->
+        <div id="report-modal" class="modal hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div class="modal-backdrop absolute inset-0 bg-black/80 backdrop-blur-md"></div>
+            <div
+                class="modal-content relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-gray-900 border border-purple-500/30 rounded-2xl p-8 shadow-2xl">
+                <div class="flex justify-between items-center mb-6">
+                    <h2
+                        class="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+                        Scientific Deep Dive Report</h2>
+                    <button id="close-report" class="text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                    <!-- HPC Metrics -->
+                    <div class="bg-gray-800/50 p-6 rounded-xl border border-white/5">
+                        <h3 class="text-xl font-semibold mb-4 text-purple-300">HPC Performance Metrics</h3>
+                        <div id="report-metrics" class="space-y-4 font-mono text-sm">
+                            <!-- Filled by JS -->
+                        </div>
+                    </div>
+                    <!-- Theoretical Convergence Graph -->
+                    <div class="bg-gray-800/50 p-6 rounded-xl border border-white/5">
+                        <h3 class="text-xl font-semibold mb-4 text-pink-300">Error Convergence Rate</h3>
+                        <div id="convergence-status" class="text-sm text-gray-400 mb-2">Steady State ($O(1/\sqrt{N})$
+                            Analysis)</div>
+                        <canvas id="convergence-chart" height="200"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-gray-800/50 p-6 rounded-xl border border-white/5 mb-8">
+                    <h3 class="text-xl font-semibold mb-4 text-blue-300">Scientific Analysis & Accuracy</h3>
+                    <div id="statistical-report" class="font-mono text-sm text-gray-300">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-1 gap-4">
+                    <button id="btn-copy-report"
+                        class="px-6 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg transition-all font-semibold">Copy
+                        Academic Report</button>
+                </div>
             </div>
         </div>
     </div>
